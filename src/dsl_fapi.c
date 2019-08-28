@@ -14,15 +14,16 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <asm/ioctl.h>
-#include <sys/fcntl.h>
 #include <sys/ioctl.h>
 #include <ltq_api_include.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <errno.h>
-#include "fapi_init_sequence.h"
 #include "dsl_fapi_debug.h"
 #ifdef UGW_VENDOR_PATH
 #include "vendor.h"
@@ -71,6 +72,129 @@ void fapi_dsl_log_set(int16_t log_level, int16_t log_type)
 	LOGF_LOG_INFO("new loglevel = %d ; new logtype = %d \n", LOGLEVEL, LOGTYPE);
 
 	return;
+}
+
+/* Adapted from libscapi package */
+static FILE * dsl_getFilePtr(const char *fname, char *mode)
+{
+    FILE *file;
+    if ((file = fopen(fname, mode)))
+    {
+        return file;
+    }
+    return NULL;
+}
+
+/* Adapted from libscapi package */
+char process_name[16]; /*  To BSS */
+#define FAIL "INVAL PROCESS"
+static char *dsl_get_process_name(IN pid_t process_num)
+{
+	char cBuff[128] = {0};
+	snprintf(cBuff, sizeof(cBuff), "/proc/%d/stat", (int)process_num);
+	char* start = NULL, *end = NULL;
+	char* ret = NULL;
+	FILE *file;
+
+
+	FILE* process_stat_file = dsl_getFilePtr(cBuff, "r");
+	if(NULL == process_stat_file)
+	{
+		ret = FAIL; /* String literals are stored in data/code memory of the process. So no prob */
+		goto returnHandler;
+	}
+
+	/*  Using the same cBuff for reading line. Reading one line is enough as process
+	 *  name will definetely be in first line */
+	if(NULL == fgets(cBuff, sizeof(cBuff), process_stat_file))
+	{
+		ret = FAIL;
+		goto returnHandler;
+	}
+	if(NULL == (start = strchr(cBuff, '(') ))
+	{
+		ret = FAIL;
+		goto returnHandler;
+	}
+
+	++start;
+
+	if(NULL == (end = strchr(cBuff, ')') ))
+	{
+		ret = FAIL;
+		goto returnHandler;
+	}
+	/*  null terminating after our string of interest */
+	*end = '\0';
+	memset(process_name, 0, sizeof(process_name));
+	snprintf(process_name, sizeof(process_name), "%s", start);
+	ret = process_name;
+
+returnHandler:
+	if(process_stat_file != NULL)
+		fclose(process_stat_file);
+	return ret;
+}
+
+/* Adapted from libscapi package */
+static int dsl_spawn(char *pcBuf, int nBlockingFlag, int* pnChildExitStatus)
+{
+	int nStatus = 0;
+	int nRet = 0;
+	pid_t pid = -1;
+	char sLDLibPath[255]={0};
+	char *envp[1];
+
+	snprintf(sLDLibPath, sizeof(sLDLibPath), "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:%s/usr/lib:%s/lib", VENDOR_PATH, VENDOR_PATH);
+	envp[0] = sLDLibPath;
+
+
+	if(pnChildExitStatus == NULL || pcBuf == NULL)
+	{
+		nRet = -EINVAL;
+		LOGF_LOG_ERROR("ERROR = %d\n", nRet);
+		goto returnHandler;
+	}
+	*pnChildExitStatus = 0;
+	pid = fork();
+	switch(pid)
+	{
+		case -1:
+			nRet = -errno;                           //can't fork
+			LOGF_LOG_ERROR( "ERROR = %d -> %s, PROCESS = %s\n", nRet, strerror(-nRet), dsl_get_process_name(getpid()));
+			goto returnHandler;
+			break;
+		case 0: //child
+			/* Doesn't return on success. Text, stack, heap, data segments of the forked process over written. use vfork() instead??*/
+			nRet = execl("/bin/sh","sh","-c", pcBuf, envp,NULL);
+			if(-1 == nRet) {
+				nRet = -errno;
+				LOGF_LOG_ERROR("ERROR = %d\n", nRet);
+				goto returnHandler;
+			}
+			break;
+		default: //parent
+			if(nBlockingFlag == 1) //block parent till child exits
+			{
+				/*After this call 'nStatus' is an encoded exit value. WIF macros will extract how it exited*/
+				if( waitpid(pid, &nStatus, 0) < 0 )
+				{
+					nRet = -errno;
+					*pnChildExitStatus = errno;
+					LOGF_LOG_ERROR("ERROR = %d\n", nRet);
+				}
+				//use only exit with +ve values in child as WEXITSTATUS() macro will only consider LSB 8 bits
+				if(WIFEXITED(nStatus))
+				{
+					nRet = EXIT_SUCCESS;
+					*pnChildExitStatus = WEXITSTATUS(nStatus);
+				}
+				goto returnHandler;
+			}
+			break;
+	}
+returnHandler:
+	return nRet;
 }
 
 DLL_LOCAL enum fapi_dsl_status shared_mem_create(key_t key)
@@ -278,14 +402,16 @@ DLL_PUBLIC struct fapi_dsl_ctx *fapi_dsl_open(unsigned int entity)
 		if (global_vars.drv_load_cnt++ == 0) {
 			struct fapi_dsl_ctx empty_ctx = { 0 };
 
+/* DSL drivers are autoloaded. So we donot need to load from here.
 			ret = fapi_sys_load(DSL_xTM);
 			if (ret != UGW_SUCCESS) {
 				LOGF_LOG_CRITICAL("DSL FAPI: fail to load PP driver\n");
 			}
+*/
 
 			LOGF_LOG_INFO("DSL FAPI: load MEI driver\n");
 			snprintf(&pCommand[0], MAX_COMMAND_LEN, CPE_SCPIRT_PATH "ltq_load_cpe_mei_drv.sh start");
-			ret = scapi_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
+			ret = dsl_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
 			if (ret != 0) {
 				LOGF_LOG_CRITICAL("DSL FAPI: fail to start dsl cpe mei driver\n");
 				return NULL;
@@ -323,7 +449,7 @@ DLL_PUBLIC struct fapi_dsl_ctx *fapi_dsl_open(unsigned int entity)
 			LOGF_LOG_INFO("DSL FAPI: load DSL driver\n");
 			memset(pCommand, 0, MAX_COMMAND_LEN);
 			snprintf(&pCommand[0], MAX_COMMAND_LEN, CPE_SCPIRT_PATH "ltq_load_dsl_cpe_api.sh start");
-			ret = scapi_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
+			ret = dsl_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
 
 			if (ret != 0) {
 				LOGF_LOG_CRITICAL("DSL FAPI: fail to start dsl api cpe driver\n");
@@ -353,7 +479,7 @@ DLL_PUBLIC struct fapi_dsl_ctx *fapi_dsl_open(unsigned int entity)
 				memset(pCommand, 0, MAX_COMMAND_LEN);
 				snprintf(&pCommand[0], MAX_COMMAND_LEN,
 							CPE_SCPIRT_PATH "ltq_load_dsl_cpe_api.sh stop");
-				ret = scapi_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
+				ret = dsl_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
 				if (ret != 0) {
 					LOGF_LOG_ERROR("DSL FAPI: fail to stop dsl api cpe driver\n");
 				}
@@ -363,7 +489,7 @@ DLL_PUBLIC struct fapi_dsl_ctx *fapi_dsl_open(unsigned int entity)
 				memset(pCommand, 0, MAX_COMMAND_LEN);
 				snprintf(&pCommand[0], MAX_COMMAND_LEN,
 							CPE_SCPIRT_PATH "ltq_load_cpe_mei_drv.sh stop");
-				ret = scapi_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
+				ret = dsl_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
 				if (ret != 0) {
 					LOGF_LOG_ERROR("DSL FAPI: fail to stop dsl cpe mei driver\n");
 				}
@@ -459,7 +585,7 @@ DLL_PUBLIC enum fapi_dsl_status fapi_dsl_close(struct fapi_dsl_ctx *ctx)
 		/* stop DSL CPE & MEI CPE drivers */
 		memset(pCommand, 0, MAX_COMMAND_LEN);
 		snprintf(&pCommand[0], MAX_COMMAND_LEN, CPE_SCPIRT_PATH "ltq_load_dsl_cpe_api.sh stop");
-		ret = scapi_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
+		ret = dsl_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
 
 		if (ret != 0) {
 			LOGF_LOG_CRITICAL("DSL FAPI: fail to stop dsl api cpe driver\n");
@@ -470,7 +596,7 @@ DLL_PUBLIC enum fapi_dsl_status fapi_dsl_close(struct fapi_dsl_ctx *ctx)
 		LOGF_LOG_INFO("DSL FAPI: call to unload MEI driver\n");
 		memset(pCommand, 0, MAX_COMMAND_LEN);
 		snprintf(&pCommand[0], MAX_COMMAND_LEN, CPE_SCPIRT_PATH "ltq_load_cpe_mei_drv.sh stop");
-		ret = scapi_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
+		ret = dsl_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
 		if (ret != 0) {
 			LOGF_LOG_CRITICAL("DSL FAPI: fail to stop dsl cpe mei driver\n");
 			fapi_status = FAPI_DSL_STATUS_ERROR;
@@ -496,8 +622,6 @@ DLL_PUBLIC enum fapi_dsl_status fapi_dsl_init(struct fapi_dsl_ctx *ctx, const st
 	char pCommand[MAX_COMMAND_LEN] = { 0 };
 	int ret, nBlockingFlag = 0, nExitStatus = 0;
 
-	LOG_FAPI_CALLFLOW_OPEN(FAPI_DSL_INIT_DEBUG);
-
 #if defined(FAPI_DEBUG) && (FAPI_DEBUG == 1)
 	LOGF_LOG_DEBUG("DSL FAPI: init ctx %p\n", ctx);
 #endif
@@ -512,17 +636,18 @@ DLL_PUBLIC enum fapi_dsl_status fapi_dsl_init(struct fapi_dsl_ctx *ctx, const st
 
 		fapi_dsl_update_web_config(cfg, &tc_mode);
 
+/* DSL drivers are autoloaded. So we donot need to load from here.
 		ret = fapi_sys_load(tc_mode);
 		if (ret != UGW_SUCCESS) {
 			LOGF_LOG_CRITICAL("sys fapi get failed\n");
 		}
-
+*/
 		LOGF_LOG_INFO("DSL FAPI: start control application\n");
 		/* start DSL CPE control application */
 
 		memset(pCommand, 0, MAX_COMMAND_LEN);
 		snprintf(&pCommand[0], MAX_COMMAND_LEN, CPE_SCPIRT_PATH "ltq_cpe_control_init.sh start");
-		ret = scapi_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
+		ret = dsl_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
 
 		if (ret != 0) {
 			LOGF_LOG_CRITICAL("DSL FAPI: fail to start dsl cpe control application\n");
@@ -536,8 +661,6 @@ DLL_PUBLIC enum fapi_dsl_status fapi_dsl_init(struct fapi_dsl_ctx *ctx, const st
 
 	/* save global variables */
 	shared_mem_global_vars_set(fapi_shared_mem_key, &global_vars);
-
-	LOG_FAPI_CALLFLOW_CLOSE();
 
 	return fapi_status;
 }
@@ -559,7 +682,7 @@ DLL_PUBLIC enum fapi_dsl_status fapi_dsl_uninit(struct fapi_dsl_ctx *ctx)
 	/* stop DSL CPE control application */
 	memset(pCommand, 0, MAX_COMMAND_LEN);
 	snprintf(&pCommand[0], MAX_COMMAND_LEN, CPE_SCPIRT_PATH "ltq_cpe_control_init.sh stop");
-	ret = scapi_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
+	ret = dsl_spawn(&pCommand[0], nBlockingFlag, &nExitStatus);
 
 	if (ret != 0) {
 		LOGF_LOG_CRITICAL("DSL FAPI: fail to stop dsl cpe control application\n");
@@ -572,12 +695,14 @@ DLL_PUBLIC enum fapi_dsl_status fapi_dsl_uninit(struct fapi_dsl_ctx *ctx)
 	--global_vars.appl_start_cnt;
 
 	sleep(5);
+/* DSL drivers are autoloaded. So we donot need to unload from here.
 	ret = fapi_sys_unload(0);
 	if (ret != UGW_SUCCESS) {
 		LOGF_LOG_CRITICAL("unload drivers failed\n");
 	} else {
 		LOGF_LOG_DEBUG("unload drivers successful\n");
 	}
+*/
 
 	/* save global variables */
 	shared_mem_global_vars_set(fapi_shared_mem_key, &global_vars);

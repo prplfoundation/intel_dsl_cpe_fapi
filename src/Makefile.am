@@ -7,6 +7,7 @@ libdslfapi_sources = \
 libdslfapi_extra_sources = \
    @top_srcdir@/src/dsl_fapi_common.h \
    @top_srcdir@/src/dsl_fapi_debug.h \
+   @top_srcdir@/src/ulogging.h \
    @top_srcdir@/include/dsl_fapi.h \
    @top_srcdir@/include/dsl_fapi_safec_wrapper.h
 
@@ -29,7 +30,7 @@ AM_LDFLAGS = -L@builddir@ \
              @IFXOS_LIBRARY_PATH@
 
 libdslfapi_la_CFLAGS = $(AM_CFLAGS)
-libdslfapi_la_LDFLAGS = -version-info 0:0:0 -lscapi -lsysfapi -lhelper
+libdslfapi_la_LDFLAGS = -version-info 0:0:0
 
 if SAFEC_SUPPORT
 libdslfapi_la_LDFLAGS += -l@SAFEC_LIB_NAME@
