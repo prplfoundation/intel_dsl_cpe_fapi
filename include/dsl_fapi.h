@@ -33,7 +33,6 @@ __BEGIN_DECLS
 #include "dsl_fapi_config.h"
 #include <stdint.h>
 #include <stdbool.h>
-#include "fapi_sys_common.h"
 
 /*! \file dsl_fapi.h
 	\brief File contains the structure and function definitions for DSL functionality.
@@ -49,6 +48,19 @@ __BEGIN_DECLS
 #define DSL_CPE_FAPI_MAX_SUPPORTED_ENTITIES 2
 #define DSL_CPE_FAPI_SINGLE_LINK 1
 #define DSL_CPE_FAPI_BONDING 2
+
+/*!
+    \brief  WAN type enumerations
+*/
+typedef enum _wan_type {
+
+	WAN_NONE = 0,		/* No WAN is active in system */
+	ETH = 1,		/* Ethernet WAN is active in system */
+	DSL_xTM = 2,		/* DSL with Auto-TC in system */
+	DSL_PTM = 3,		/* DSL with PTM-TC in system */
+	DSL_ATM = 4,		/*DSL with ATM-TC in system */
+	CELL = 5		/* Cellular WAN in system */
+} WAN_TYPE_t;
 
 /**
 	DSL Line object declaration, based on TR-181 definitions

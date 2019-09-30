@@ -12,6 +12,11 @@
 #ifndef _dsl_fapi_common_h
 #define _dsl_fapi_common_h
 
+#define IN
+#define OUT
+#define IN_OUT
+#define VENDOR_PATH "/opt/intel"
+
 #include "dsl_fapi.h"
 #include "dsl_fapi_config.h"
 #include "drv_dsl_cpe_api.h"

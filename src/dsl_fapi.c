@@ -8,7 +8,6 @@
   this software module.
 
 ******************************************************************************/
-
 #include "dsl_fapi_config.h"
 #include "dsl_fapi_common.h"
 #include <string.h>
@@ -18,7 +17,6 @@
 #include <fcntl.h>
 #include <asm/ioctl.h>
 #include <sys/ioctl.h>
-#include <ltq_api_include.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/ipc.h>
@@ -67,10 +65,11 @@ struct dsl_fapi_x_lantiq_com_config_obj x_lantiq_com_config_obj = { 0 };
 
 void fapi_dsl_log_set(int16_t log_level, int16_t log_type)
 {
+#ifdef LOGGING_ID
 	LOGLEVEL = log_level;
 	LOGTYPE = log_type;
 	LOGF_LOG_INFO("new loglevel = %d ; new logtype = %d \n", LOGLEVEL, LOGTYPE);
-
+#endif
 	return;
 }
 
